@@ -1,0 +1,316 @@
+---
+title: "AD455 Term Project - Political Corruption and Economic Growth"
+author: "Berna Oruç"
+date: "2024-05-24"
+output: html_document
+editor_options: 
+  markdown: 
+    wrap: sentence
+---
+
+```{r}
+library(data.table)
+library(readxl)
+library(tidyverse)
+library(tidyr)
+library(broom)
+library(ggplot2)
+library(GGally)
+library(plotly) 
+library(DT)
+library(caret) 
+library(psych) 
+library(lindia) 
+library(pROC)
+```
+
+##-------------------------------------data cleaning-------------------------------
+
+```{r}
+##read the dataset files and clean the unnecessary columns and rows
+
+cpi <- read_excel("sdg_16_50_spreadsheet.xlsx", sheet= 3, skip = 7)
+gdp_percap <- read_excel("tec00115_spreadsheet.xlsx", sheet = 4, skip = 8)
+gdp_percap <- gdp_percap %>% select(-starts_with("..."))
+
+str(gdp_percap)
+str(cpi)
+gdp_percap$TIME
+cpi$TIME
+```
+
+Data includes from 2012 to 2023 inputs.
+For GDP Growth there are 51 observation, and for CPI there are 46 observations (countries).
+I will filter for the same countries for both the datasets before merge them.
+-\> 36 countries I filter.
+
+```{r}
+rows_to_use <- c("Belgium", "Bulgaria", "Czechia", "Denmark", "Germany", "Estonia", "Ireland", "Greece", "Spain", "France", "Croatia", "Italy", "Cyprus", "Latvia", "Lithuania", "Luxembourg", "Hungary", "Malta", "Netherlands", "Austria", "Poland", "Portugal", "Romania", "Slovenia", "Slovakia", "Finland", "Sweden", "Iceland", "Norway", "Switzerland", "United Kingdom", "Montenegro", "North Macedonia", "Albania", "Serbia", "Türkiye" )
+
+
+cpi <- cpi %>% 
+  filter(TIME %in% rows_to_use)
+gdp_percap <- gdp_percap %>% 
+  filter(TIME %in% rows_to_use)
+```
+
+Change the structure of datasets to merge them.
+
+```{r}
+cpi_long <- cpi %>%
+  pivot_longer(-TIME, names_to = "year", values_to = "cpi")
+gdp_percap_long <- gdp_percap %>%
+  pivot_longer(-TIME, names_to = "year", values_to = "gdp_percap")
+
+data_long <- cpi_long %>%
+  inner_join(gdp_percap_long, by = c("TIME", "year"))%>%
+  rename( country= TIME)%>%
+  mutate_at(vars(cpi, gdp_percap), as.numeric)
+head(data_long)
+str(data_long)
+```
+
+Since these are time series data, I will use lag technique to compare the effect of corruption level and the gdp growth rate of different time scales ( 3, 4, 5, and 6 years periods)
+
+```{r}
+data_laged <- data_long %>%
+  group_by(country) %>%
+  arrange(country, year) %>%
+  mutate(
+    cpi_lag3 = lag(cpi, 3),
+    cpi_lag4 = lag(cpi, 4),
+    cpi_lag5 = lag(cpi, 5),
+    cpi_lag6 = lag(cpi, 6),
+    gdp_lag3 = lag(gdp_percap, 3),
+    gdp_lag4 = lag(gdp_percap, 4),
+    gdp_lag5 = lag(gdp_percap, 5),
+    gdp_lag6 = lag(gdp_percap, 6)
+  ) %>%
+  ungroup()%>%
+  na.omit()
+  
+head(data_laged)
+```
+
+
+#-------------------------------------descriptive analysis-------------------------
+```{r}
+summary(data_laged)
+```
+CPI value is between 35 and 90. Mean CPI is 63, and mean GDP growth is 2. GDP Growth rate (per capita) is between -15.20 and 15.60.
+CPI lagged values are very similar to each other. GDP lagged values are differentiate in terms of minimum values (gdp_lag3 has the lowest with -11.)
+
+##----------------------------------linear regression------------------------------
+
+Examine the relation and correlation values between variables.
+In general, I observe a significant correlation between pairs.
+
+```{r}
+ggpairs(data_laged[3:12])
+```
+
+Let's slice the dataset in to train and test
+
+```{r}
+set.seed(1868)
+train_ratio <- 0.6
+
+n_train <- floor(nrow(data_laged) * train_ratio)
+train_indices <- sample(nrow(data_laged), n_train)
+train_data <- data_laged[train_indices, ]
+test_data <- data_laged[-train_indices, ]
+
+
+```
+
+Build a basic linear model
+
+```{r}
+linear_model <- lm(gdp_lag3 ~cpi_lag3, data = train_data)
+summary(linear_model)
+```
+
+For 3 years lagged data, there is a negative correlation between CPI and GDP Growth rate in 99% confidence level.
+This means that when the CPI value increase 1 unit the GPD growth rate will decrease by 0.04949.
+Since higher CPI means a higher corruption level, and higher CPI results a decrease in GDP Growth Rate, at this point our hypothesis is correct.
+Let's examine this case for different time scales.
+
+Build a loop to examine all the combination of variables in linear regression models and then compare them according to p-values.
+
+```{r}
+#create empty data frame to put the results
+results <- data.frame(GDP = character(),
+                      CPI = character(),
+                      P_Value = numeric(),
+                      Adj_R_Squared = numeric(),
+                      stringsAsFactors = FALSE)
+
+# Build loop
+for (gdp_lag in 3:6) {
+  for (cpi_lag in 3:6) {
+
+    gdp_col <- paste0("gdp_lag", gdp_lag)
+    cpi_col <- paste0("cpi_lag", cpi_lag)
+    
+    model <- lm(as.formula(paste(gdp_col, "~", cpi_col)), data = train_data)
+    
+    model_summary <- summary(model)
+    
+    p_value <- coef(model_summary)[cpi_col, "Pr(>|t|)"]
+    
+    adj_r_squared <- model_summary$adj.r.squared
+
+    results <- rbind(results, data.frame(GDP = gdp_col, CPI = cpi_col, P_Value = p_value, Adj_R_Squared = adj_r_squared))
+  }
+}
+
+# Filter the results to keep only p-values lower than 0.05 and arrange them adjusted R-squared descending
+significant_results <- results %>%
+  filter(P_Value < 0.05)%>%
+  arrange(desc(Adj_R_Squared))
+
+# View the significant results
+print(significant_results)
+
+```
+
+There is 15 linear model that are in the 95% confidence interval but the adjusted R-squared values are quite low.
+The best result is between 4 years lagged GDP and 3 years lagged CPI.
+Try to improve the model with linearization techniques (log, square)
+
+```{r}
+linear_model2 <- lm(gdp_lag4 ~c(cpi_lag3^2) , data = train_data)
+summary(linear_model2)
+```
+
+```{r}
+linear_model3 <- lm(gdp_lag4 ~log(cpi_lag3) , data = train_data)
+summary(linear_model3)
+```
+
+When we use the squared the GDP growth rate this improves the Adjusted R-squared and p-value.
+
+```{r}
+gg_qqplot(linear_model2, scale.factor = 1)
+```
+
+This is quite a good result with a little divergence at the end.
+
+```{r}
+options(repr.plot.width = 5, repr.plot.height = 5)
+
+actual_train <- train_data$gdp_lag4
+predicted_train <- predict(linear_model2, train_data)
+
+actual_test <- test_data$gdp_lag4
+predicted_test <- predict(linear_model2, test_data)
+
+model_dt <- data.table(partition = c("train", "test"),
+                       R2 = c(R2(predicted_train, actual_train),
+                                R2(predicted_test, actual_test)),
+                        RMSE = c(RMSE(predicted_train, actual_train),
+                                 RMSE(predicted_test, actual_test)),
+                        MAE = c(MAE(predicted_train, actual_train),
+                                MAE(predicted_test, actual_test))
+                        )
+
+model_dt
+```
+
+The model performed better on test dataset with higher R2 - MAE, and lower RMSE.
+So there is no overfitting and this model can generalize well to unseen data.
+
+##-----------------------------------logistic regression---------------------------
+
+```{r}
+# Create a binary outcome variable for logistic regression
+data_logit <- data_laged %>%
+  mutate(gdp_percap_binary = ifelse(gdp_percap > mean(gdp_percap), 1, 0))
+```
+
+Compare each combination of every one of the cpi_lag variables.
+
+```{r}
+results <- data.frame(GDP = character(),
+                      CPI = character(),
+                      P_Value_CPI = numeric(),
+                      AIC = numeric(),
+                      stringsAsFactors = FALSE)
+
+for (cpi_lag in 2:6) {
+  gdp_col <- "gdp_percap_binary"
+  cpi_col <- paste0("cpi_lag", cpi_lag)
+  
+
+  if (cpi_col %in% names(data_logit)) {
+
+    formula <- as.formula(paste(gdp_col, "~", cpi_col))
+    model <- glm(formula, data = data_logit, family = binomial)
+
+    model_summary <- summary(model)
+
+    p_value_cpi <- coef(model_summary)[cpi_col, "Pr(>|z|)"]
+
+    aic_value <- model_summary$aic
+    
+    results <- rbind(results, data.frame(GDP = gdp_col, 
+                                         CPI = cpi_col, 
+                                         P_Value_CPI = p_value_cpi, 
+                                         AIC = aic_value))
+  }
+}
+
+# Filter the results to keep only rows where the p-value is lower than 0.05
+significant_results <- results %>%
+  filter(P_Value_CPI < 0.05) %>%
+  arrange(AIC)  # Arrange by AIC in ascending order (lower AIC is better)
+
+print(significant_results)
+```
+
+All the p-vales are statistically significant in 95% confidence level.
+AIC means Akaike information criterion, a measure of how good a model is relative to the number of features it uses, and lower AIC scores are generally better.
+Here the lowest AIC is 254.0420.
+
+Let's try to improve the model by using square and log.
+
+```{r}
+logistic_model2 <- glm(gdp_percap_binary ~  c(cpi_lag5^2) , data = data_logit, family = binomial)
+summary(logistic_model2)
+```
+
+```{r}
+logistic_model3 <- glm(gdp_percap_binary ~  log(cpi_lag5) , data = data_logit, family = binomial)
+summary(logistic_model3)
+```
+
+logistic_model2
+
+glm(formula = gdp_percap_binary \~ c(cpi_lag5\^2), family = binomial, data = data_logit) This model has better results in terms of AIC (AIC: 253.41)
+
+Let's visualize the model in order to interpret its performance.
+
+#----------------------------------logit visualize-----------------------------------
+
+Evaluate classification performance
+
+```{r}
+data_logit$cpi_lag5_sq <- data_logit$cpi_lag5^2
+logistic_model2.2 <- glm(gdp_percap_binary ~ cpi_lag5_sq, family = binomial, data = data_logit)
+
+logitpred_train <- predict(logistic_model2.2, newdata = data_logit, type = "response")
+
+train_class <- ifelse(logitpred_train > 0.5, 1, 0)
+table(fitted = train_class, actual = data_logit$gdp_percap_binary) %>% caret::confusionMatrix(positive = "1")
+
+```
+
+```{r}
+# ROC Curve
+roc_curve <- roc(data_logit$gdp_percap_binary, predict(logistic_model2.2, type = "response"))
+plot(roc_curve, main = "ROC Curve", col = "blue")
+```
+Not a very good ROC curve.
+```{r}
+pROC::auc(data_logit$gdp_percap_binary, logitpred_train)
+```
