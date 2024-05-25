@@ -3,10 +3,13 @@ title: "AD455 Term Project - Political Corruption and Economic Growth"
 author: "Berna Oruç"
 date: "2024-05-24"
 output: html_document
-editor_options: 
-  markdown: 
-    wrap: sentence
 ---
+
+In this project I will examine the relation between political corruption and Economic Growth.
+Hypothesis: When the country is politically corrupted, the economic growth would be lower or negative. 
+Data: Political Corruption : Corruption Perception Index (CPI), https://data.europa.eu/data/datasets/ojmmqokcgkay4cdfkwdavw?locale=en 
+    Economic Growth:Real GDP Growth Rate per capita, https://ec.europa.eu/eurostat/databrowser/view/tec00115/default/table?lang=en 
+
 
 ```{r}
 library(data.table)
@@ -174,7 +177,7 @@ print(significant_results)
 
 ```
 
-There is 15 linear model that are in the 95% confidence interval but the adjusted R-squared values are quite low.
+There is 16 linear model that are in the 95% confidence interval but the adjusted R-squared values are quite low.
 The best result is between 4 years lagged GDP and 3 years lagged CPI.
 Try to improve the model with linearization techniques (log, square)
 
@@ -217,18 +220,32 @@ model_dt <- data.table(partition = c("train", "test"),
 model_dt
 ```
 
-The model performed better on test dataset with higher R2 - MAE, and lower RMSE.
-So there is no overfitting and this model can generalize well to unseen data.
+The model performed worse on test dataset with lower R2 - MAE, and lower RMSE.
+So there is overfitting and this model do not generalize well to unseen data.
 
+
+
+Let's build a logistic regression with the result of linear regression. I will use mean of cpi_lag3 as the thresshold for clustering.  
 ##-----------------------------------logistic regression---------------------------
 
 ```{r}
 # Create a binary outcome variable for logistic regression
 data_logit <- data_laged %>%
-  mutate(gdp_percap_binary = ifelse(gdp_percap > mean(gdp_percap), 1, 0))
+  mutate(cpi_binary = ifelse(cpi_lag3 > mean(cpi_lag3), 1, 0))
+data_logit %>%
+  select(gdp_lag4, cpi_binary) %>%
+  ggplot(aes(x = as.factor(cpi_binary), y = gdp_lag4, fill = as.factor(cpi_binary))) +
+  geom_boxplot()+
+  stat_summary(fun = mean, geom = "text", aes(label = round(..y.., 2)), vjust = -1, position = position_dodge(width = 0.75)) +
+  labs(title = "-",
+       y = "GDP Growth Rate per capita",
+       x= "CPI Group",
+       fill= "CPI Group")+
+  theme(legend.position = "none")
 ```
+There is a clear distinction between two groups. The corruption index higher group (1) has the lower GDP Growth rate compared to countries with lower Corruption level. But still there are several outliers. 
 
-Compare each combination of every one of the cpi_lag variables.
+Compare each combination of every one of the gdp_lag variables.
 
 ```{r}
 results <- data.frame(GDP = character(),
@@ -237,32 +254,32 @@ results <- data.frame(GDP = character(),
                       AIC = numeric(),
                       stringsAsFactors = FALSE)
 
-for (cpi_lag in 2:6) {
-  gdp_col <- "gdp_percap_binary"
-  cpi_col <- paste0("cpi_lag", cpi_lag)
+for (gdp_lag in 2:6) {
+  cpi_col <- "cpi_binary"
+  gdp_col <- paste0("gdp_lag", gdp_lag)
   
 
-  if (cpi_col %in% names(data_logit)) {
+  if (gdp_col %in% names(data_logit)) {
 
-    formula <- as.formula(paste(gdp_col, "~", cpi_col))
+    formula <- as.formula(paste(cpi_col, "~", gdp_col))
     model <- glm(formula, data = data_logit, family = binomial)
 
     model_summary <- summary(model)
 
-    p_value_cpi <- coef(model_summary)[cpi_col, "Pr(>|z|)"]
+    p_value_gdp <- coef(model_summary)[gdp_col, "Pr(>|z|)"]
 
     aic_value <- model_summary$aic
     
-    results <- rbind(results, data.frame(GDP = gdp_col, 
-                                         CPI = cpi_col, 
-                                         P_Value_CPI = p_value_cpi, 
+    results <- rbind(results, data.frame(CPI = cpi_col,
+                                         GDP = gdp_col,
+                                         P_Value_GDP = p_value_gdp, 
                                          AIC = aic_value))
   }
 }
 
 # Filter the results to keep only rows where the p-value is lower than 0.05
 significant_results <- results %>%
-  filter(P_Value_CPI < 0.05) %>%
+  filter(P_Value_GDP < 0.05) %>%
   arrange(AIC)  # Arrange by AIC in ascending order (lower AIC is better)
 
 print(significant_results)
@@ -270,23 +287,13 @@ print(significant_results)
 
 All the p-vales are statistically significant in 95% confidence level.
 AIC means Akaike information criterion, a measure of how good a model is relative to the number of features it uses, and lower AIC scores are generally better.
-Here the lowest AIC is 254.0420.
+Here the lowest AIC is 256.8698.
 
-Let's try to improve the model by using square and log.
 
 ```{r}
-logistic_model2 <- glm(gdp_percap_binary ~  c(cpi_lag5^2) , data = data_logit, family = binomial)
+logistic_model2 <- glm(cpi_binary ~  gdp_lag4 , data = data_logit, family = binomial)
 summary(logistic_model2)
 ```
-
-```{r}
-logistic_model3 <- glm(gdp_percap_binary ~  log(cpi_lag5) , data = data_logit, family = binomial)
-summary(logistic_model3)
-```
-
-logistic_model2
-
-glm(formula = gdp_percap_binary \~ c(cpi_lag5\^2), family = binomial, data = data_logit) This model has better results in terms of AIC (AIC: 253.41)
 
 Let's visualize the model in order to interpret its performance.
 
@@ -295,22 +302,29 @@ Let's visualize the model in order to interpret its performance.
 Evaluate classification performance
 
 ```{r}
-data_logit$cpi_lag5_sq <- data_logit$cpi_lag5^2
-logistic_model2.2 <- glm(gdp_percap_binary ~ cpi_lag5_sq, family = binomial, data = data_logit)
-
-logitpred_train <- predict(logistic_model2.2, newdata = data_logit, type = "response")
+logitpred_train <- predict(logistic_model2, newdata = data_logit, type = "response")
 
 train_class <- ifelse(logitpred_train > 0.5, 1, 0)
-table(fitted = train_class, actual = data_logit$gdp_percap_binary) %>% caret::confusionMatrix(positive = "1")
+table(fitted = train_class, actual = data_logit$cpi_binary) %>% caret::confusionMatrix(positive = "1")
 
 ```
-
+The model is a good model with 76% accuracy rate. It predicted correctly negative results (class 0) with 95 to 27 and, it is good at predicting the positive results with 61 compared to 21.
 ```{r}
 # ROC Curve
-roc_curve <- roc(data_logit$gdp_percap_binary, predict(logistic_model2.2, type = "response"))
+roc_curve <- roc(data_logit$cpi_binary, predict(logistic_model2, type = "response"))
 plot(roc_curve, main = "ROC Curve", col = "blue")
 ```
-Not a very good ROC curve.
+A good ROC curve.
 ```{r}
-pROC::auc(data_logit$gdp_percap_binary, logitpred_train)
+pROC::auc(data_logit$cpi_binary, logitpred_train)
 ```
+
+AUC is quite high 0.79. This means that this logistic model's performance is good.
+
+
+#----------------------SUMMARY-----------------------------
+
+There is a statistically significant negative correlation between Political Corruption and GDP Growth rate. In this study data are provided by Eurostat, CPI is used as Political Corruption and GDP Growth Rate per capita as the economic indicator. Since these are panel(time series) data, I used lagged variables with 3,4,5,6 consecutive years. The best result in linear regression is yield by the model "lm(formula = gdp_lag4 ~ c(cpi_lag3^2), data = train_data)". So, the highest correlation is observed between 3 years of CPI and 4 years GDP. In order to improve the performance of the model, I use the square technique (a linearization technique) and this worked well. Then I build a reverse logistic model where I examine the GDP Growth rate change effect on CPI. I cluster the data according to mean of CPI to two groups. The result was good. The means and distribution of two CPI groups are not overlapping meaning that there is a difference between two CPI groups. The lower CPI group(the lower corruption level) have a higher GDP Growth rate per capita. When I put this information on a logistic model as glm(formula = cpi_binary ~ gdp_lag4, family = binomial, data = data_logit), the relation between dependent and independent variable was statistically significant and this relation sign was negative. In this way I approve my hypothesis in a reverse way too. Additionally the logistic model accuracy is 0.76 which is a quite success rate.
+
+
+
